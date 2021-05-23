@@ -1,0 +1,131 @@
+#!/usr/bin/env python
+import zipfile
+from argparse import ArgumentParser
+from binascii import hexlify
+from struct import unpack
+from collections import Counter
+
+# based on https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
+
+def parse_ux(data):
+    if len(data) == 0xb:
+        _, _, uid, _, gid = unpack("<ccIcI", data)
+        return "uid:{:d} gid:{:d}".format(uid, gid)
+    else:
+        return None
+
+
+def parse_aex(data):
+    return "encrypted"
+
+
+system =    (   "MS-DOS", "Amiga", "OpenVMS", "UNIX", "VM/CMS", "Atari ST", 
+                "OS/2 H.P.F.S.", "Macintosh", "Z-System", "CP/M", "Windows NTFS", 
+                "MVS (OS/390-Z/OS)", "VSE", "Acorn Risc", "VFAT", "alternate MVS", 
+                "BeOS", "Tandem", "OS/400", "OS X (Darwin)")
+
+comp =      {   0:"None",
+                1:"Shrink", 
+                2:"Reduce1",
+                3:"Reduce2",
+                4:"Reduce3",
+                5:"Reduce4",
+                6:"Implode",
+                7:"Tokenize",
+                8:"Deflate",
+                9:"Deflate64",
+                10:"TERSE(old)",
+                11:"unknown",
+                12:"BZIP2",
+                13:"unknown",
+                14:"LZMA",
+                15:"unknown",
+                16:"CMPSC",
+                17:"unknown",
+                18:"TERSE(new)",
+                19:"LZ77z",
+                20:"zstd(old)",
+                93:"zstd",
+                94:"MP3",
+                95:"XZ",
+                96:"JPEG",
+                97:"WavPack",
+                98:"PPMd_I_1",
+                99:"AE-x"}
+
+
+subparser = {
+                0x7875: parse_ux,
+                0x9901: parse_aex,
+             }
+
+
+def parse_extra(b):
+    l = []
+    while len(b)>4:
+        d = None
+        _type, size = unpack("<HH", b[:4])
+        data = b[4:4+size]
+        if all(c in range(0x20, 0x7f) for c in b[:2]):
+            s = "{}".format(b[:2].decode("utf-8"))
+        else:
+            s = "0x{:X}".format(_type)
+        if _type in subparser:
+            d = subparser[_type](data)
+            if d != None:
+                s += "({})".format(d)
+        b = b[4+size:]
+        if s not in l:
+            l.append(s)
+    return l
+
+
+def get_type(e):
+    if e.filename[-1] == "/":
+        t = "folder"
+    else:
+        if e.internal_attr & 1 == 1:
+            t = "ascii"
+        else:
+            t = "binary"
+    return t
+
+
+def zip_header_info(f):
+    res = []
+    try:
+        z = zipfile.ZipFile(f)
+    except:
+        return None
+    for e in  z.infolist():
+        t = get_type(e)
+        cv = e.create_version
+        ev = e.extract_version
+        info = "{4:08x}  {6:18} {0:8} {1:5} {2:5} {3:10} {5}".format(t, str(int(cv/10)) + "." + str(cv % 10), str(int(ev/10)) + "." + str(ev % 10), comp[e.compress_type], e.external_attr, ",".join(parse_extra(e.extra)), system[e.create_system])
+        res.append(info)
+    return res
+
+
+def print_fingerprint(l, brief=False):
+    c = Counter(sorted(l))
+    count_width = max(len(str(max(c.values()))), 5)
+    indent = ""
+    if not brief:
+        print(f)
+        print("  {:{width}}  attrib    OS                 type     CV    EV    compr      extra".format("count", width=count_width))
+        indent = "  "
+    for line, count in c.items():
+        print("{}{:{width}}  {}".format(indent, count, line, width=count_width))
+
+
+if __name__ == '__main__':
+    parser = ArgumentParser()
+    parser.add_argument("file", nargs="+")
+    parser.add_argument("-b", "--brief", default=False, action="store_true", help="do not print header lines")
+
+    args = parser.parse_args()
+
+    for f in args.file:
+        fingerprint = zip_header_info(f)
+        if fingerprint:
+            print_fingerprint(fingerprint, args.brief)
